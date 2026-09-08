@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Frontend
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+
+# macOS
+.DS_Store

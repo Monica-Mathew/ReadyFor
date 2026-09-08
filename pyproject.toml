@@ -1,0 +1,21 @@
+[project]
+name = "readyfor"
+version = "0.1.0"
+description = "An AI pre-departure assistant that helps you get ready before you leave."
+authors = [
+    {name = "Monica-Mathew",email = "63261145+Monica-Mathew@users.noreply.github.com"}
+]
+license = "MIT"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "strands-agents (>=1.54.0,<2.0.0)",
+    "botocore[crt] (>=1.43.89,<2.0.0)",
+    "httpx (>=0.28.1,<0.29.0)",
+    "fastapi (>=0.141.1,<0.142.0)",
+    "uvicorn (>=0.52.4,<0.53.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
