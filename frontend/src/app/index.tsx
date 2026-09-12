@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import { useMarkdown } from 'react-native-marked';
 import AppointmentPicker from '@/components/appointment-picker';
@@ -8,7 +8,8 @@ import {
   Text,
   TextInput,
   View,
-  ScrollView
+  ScrollView,
+  useWindowDimensions
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 type PlaceSuggestion = {
@@ -31,6 +32,10 @@ function PlanContent({ text }: { text: string }) {
 }
 
 export default function HomeScreen() {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 960;
+  const scrollRef = useRef<ScrollView>(null);
+  const [editing, setEditing] = useState(false);
   const [request, setRequest] = useState('');
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [locationError, setLocationError] = useState('');
@@ -45,6 +50,14 @@ const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 const [detailsError, setDetailsError] = useState('');
 const [travel, setTravel] = useState<TravelEstimate | null>(null);
 const [plan, setPlan] = useState('');
+  useEffect(() => {
+    if (plan && !isWide && !editing) {
+      const frame = requestAnimationFrame(() => {
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [plan, isWide, editing]);
   async function useCurrentLocation() {
     setLocationError('');
 
@@ -115,6 +128,7 @@ if (
       }
 
       const data = await response.json();
+      setEditing(false);
       setPlan(data.plan ?? '');
       setTravel(data.travel ?? null);
       console.log('Prepare response:', data);
@@ -250,12 +264,20 @@ if (
   return (
     <SafeAreaView style={styles.safeArea}>
   <ScrollView
+    ref={scrollRef}
     style={{ flex: 1 }}
     contentContainerStyle={styles.container}
     keyboardShouldPersistTaps="handled"
   >
-      <View style={styles.container}>
-        <Text style={styles.logo}>ReadyFor</Text>
+      <Text style={styles.logo}>ReadyFor</Text>
+      <View style={[styles.layout, isWide && styles.wideLayout]}>
+      {isWide || !plan || editing ? (
+      <View style={[styles.formPanel, isWide && styles.wideForm]}>
+        {!isWide && plan ? (
+          <Pressable onPress={() => setEditing(false)} style={styles.editButton}>
+            <Text style={styles.locationText}>Back to plan</Text>
+          </Pressable>
+        ) : null}
 
         <Text style={styles.heading}>
           What are you getting ready for?
@@ -380,6 +402,26 @@ if (
             {isPreparing ? 'Sending...' : 'Prepare Me'}
           </Text>
         </Pressable>
+        {prepareError ? (
+          <Text style={styles.errorText}>{prepareError}</Text>
+        ) : null}
+      </View>
+      ) : null}
+      {isWide || (plan && !editing) ? (
+      <View style={styles.resultsPanel}>
+        <View style={styles.resultHeader}>
+          <Text style={styles.resultTitle}>Your plan</Text>
+          {!isWide && plan ? (
+            <Pressable onPress={() => setEditing(true)} style={styles.editButton}>
+              <Text style={styles.locationText}>Edit appointment</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {!plan ? (
+          <Text style={styles.emptyPlan}>
+            {isPreparing ? 'Preparing your plan…' : 'Add your appointment and select Prepare Me to see your plan here.'}
+          </Text>
+        ) : null}
         {plan ? (
   <View style={styles.travelCard}>
     <PlanContent text={plan} />
@@ -400,9 +442,10 @@ if (
 ) : null}
 
 
-        {prepareError ? (
-          <Text style={styles.errorText}>{prepareError}</Text>
-        ) : null}
+
+
+      </View>
+      ) : null}
       </View>
         </ScrollView>
 </SafeAreaView>
@@ -410,6 +453,21 @@ if (
 }
 
 const styles = StyleSheet.create({
+  layout: { gap: 28, alignItems: 'stretch' },
+  wideLayout: { flexDirection: 'row', alignItems: 'flex-start' },
+  formPanel: { width: '100%' },
+  wideForm: { width: '47%', flexShrink: 0 },
+  resultsPanel: { flex: 1, minWidth: 0, width: '100%' },
+  resultHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', flexWrap: 'wrap', gap: 8,
+  },
+  resultTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
+  editButton: { paddingVertical: 12, paddingHorizontal: 4 },
+  emptyPlan: {
+    marginTop: 16, padding: 24, borderRadius: 12,
+    backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: 16, lineHeight: 24,
+  },
   safeArea: {
     flex: 1,
     backgroundColor: '#ffffff',
@@ -418,18 +476,18 @@ const styles = StyleSheet.create({
   logo: {
     fontSize: 20,
     fontWeight: '700',
-    marginBottom: 48,
+    marginBottom: 20,
   },
 
   heading: {
-    fontSize: 30,
+    fontSize: 26,
     fontWeight: '700',
-    lineHeight: 38,
+    lineHeight: 32,
     marginBottom: 20,
   },
 
   input: {
-    minHeight: 140,
+    minHeight: 88,
     borderWidth: 1,
     borderColor: '#d1d5db',
     borderRadius: 16,
@@ -553,9 +611,9 @@ travelDistance: {
 container: {
   flexGrow: 1,
   paddingHorizontal: 24,
-  paddingTop: 48,
+  paddingTop: 24,
   paddingBottom: 48,
-  maxWidth: 600,
+  maxWidth: 1200,
   width: '100%',
   alignSelf: 'center',
 },
