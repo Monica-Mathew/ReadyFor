@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import * as Location from 'expo-location';
+import { useMarkdown } from 'react-native-marked';
+import AppointmentPicker from '@/components/appointment-picker';
 import {
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
+  ScrollView
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 type PlaceSuggestion = {
@@ -13,6 +16,20 @@ type PlaceSuggestion = {
   place_id: string;
   address: string;
 };
+type PlaceDetails = PlaceSuggestion & {
+  latitude: number;
+  longitude: number;
+};
+type TravelEstimate = {
+  travel_minutes: number;
+  distance_meters: number;
+};
+function PlanContent({ text }: { text: string }) {
+  const elements = useMarkdown(text, { colorScheme: 'light' });
+
+  return <View>{elements}</View>;
+}
+
 export default function HomeScreen() {
   const [request, setRequest] = useState('');
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -22,6 +39,12 @@ export default function HomeScreen() {
     useState<PlaceSuggestion | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [destinationDetails, setDestinationDetails] =
+  useState<PlaceDetails | null>(null);
+const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+const [detailsError, setDetailsError] = useState('');
+const [travel, setTravel] = useState<TravelEstimate | null>(null);
+const [plan, setPlan] = useState('');
   async function useCurrentLocation() {
     setLocationError('');
 
@@ -41,15 +64,31 @@ export default function HomeScreen() {
   const [prepareError, setPrepareError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [destination, setDestination] = useState('');
+  const [appointmentTime, setAppointmentTime] = useState<Date | null>(null);
+
   async function prepareMe() {
     setPrepareMessage('');
     setPrepareError('');
-
+    setTravel(null); 
+    setPlan('');
     if (!request.trim()) {
       setPrepareError('Please enter what you are getting ready for.');
       return;
     }
-
+if (
+  destination.trim() &&
+  (
+    !selectedPlace ||
+    !destinationDetails ||
+    destinationDetails.place_id !== selectedPlace.place_id ||
+    isLoadingDetails
+  )
+) {
+  setPrepareError(
+    'Please select a destination and wait for it to finish loading.'
+  );
+  return;
+}
     setIsPreparing(true);
 
     try {
@@ -63,6 +102,11 @@ export default function HomeScreen() {
           latitude: location?.coords.latitude ?? null,
           longitude: location?.coords.longitude ?? null,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          destination:
+    destinationDetails?.place_id === selectedPlace?.place_id
+      ? destinationDetails
+      : null,
+      appointment_time: appointmentTime?.toISOString() ?? null,
         }),
       });
 
@@ -71,6 +115,9 @@ export default function HomeScreen() {
       }
 
       const data = await response.json();
+      setPlan(data.plan ?? '');
+      setTravel(data.travel ?? null);
+      console.log('Prepare response:', data);
       console.log('Backend time zone:', data.timezone);
       setPrepareMessage(
         data.latitude != null && data.longitude != null
@@ -142,8 +189,71 @@ export default function HomeScreen() {
       controller.abort();
     };
   }, [destination, location, selectedPlace, showDetails]);
+  useEffect(() => {
+  setDestinationDetails(null);
+  setDetailsError('');
+  setIsLoadingDetails(false);
+
+  if (!selectedPlace) {
+    return;
+  }
+
+  const controller = new AbortController();
+  let active = true;
+
+  async function loadDetails() {
+    setIsLoadingDetails(true);
+
+    try {
+      const params = new URLSearchParams({
+        place_id: selectedPlace!.place_id,
+      });
+
+      const response = await fetch(
+        `http://127.0.0.1:8000/places/details?${params}`,
+        { signal: controller.signal }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          'Could not load this destination. Please select it again.'
+        );
+      }
+
+      const data: PlaceDetails = await response.json();
+
+      if (active) {
+        setDestinationDetails(data);
+      }
+    } catch (error) {
+      if (active) {
+        setDetailsError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load destination details.'
+        );
+      }
+    } finally {
+      if (active) {
+        setIsLoadingDetails(false);
+      }
+    }
+  }
+
+  loadDetails();
+
+  return () => {
+    active = false;
+    controller.abort();
+  };
+}, [selectedPlace]);
   return (
     <SafeAreaView style={styles.safeArea}>
+  <ScrollView
+    style={{ flex: 1 }}
+    contentContainerStyle={styles.container}
+    keyboardShouldPersistTaps="handled"
+  >
       <View style={styles.container}>
         <Text style={styles.logo}>ReadyFor</Text>
 
@@ -166,9 +276,22 @@ export default function HomeScreen() {
             {showDetails ? '− Appointment details' : '+ Appointment details'}
           </Text>
         </Pressable>
+        
 
         {showDetails ? (
           <View style={styles.detailsSection}>
+            <View style={{ marginBottom: 16 }}>
+      <Text style={styles.fieldLabel}>Appointment date and time</Text>
+
+      <AppointmentPicker
+        value={appointmentTime}
+        onChange={setAppointmentTime}
+      />
+
+      <Text style={styles.searchHint}>
+        Time zone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
+      </Text>
+    </View>
             <Text style={styles.fieldLabel}>Destination</Text>
 
             <TextInput
@@ -220,11 +343,19 @@ export default function HomeScreen() {
               </View>
             ) : null}
 
-            {selectedPlace ? (
-              <Text style={styles.searchHint}>
-                ✓ Selected: {selectedPlace.address || selectedPlace.title}
-              </Text>
-            ) : null}
+            {isLoadingDetails ? (
+  <Text style={styles.searchHint}>Loading destination…</Text>
+) : null}
+
+{detailsError ? (
+  <Text style={styles.errorText}>{detailsError}</Text>
+) : null}
+
+{destinationDetails ? (
+  <Text style={styles.searchHint}>
+    ✓ Destination ready: {destinationDetails.address}
+  </Text>
+) : null}
           </View>
         ) : null}
         <Pressable
@@ -249,14 +380,32 @@ export default function HomeScreen() {
             {isPreparing ? 'Sending...' : 'Prepare Me'}
           </Text>
         </Pressable>
+        {plan ? (
+  <View style={styles.travelCard}>
+    <PlanContent text={plan} />
+  </View>
+) : null}
+        {travel ? (
+  <View style={styles.travelCard}>
+    <Text style={styles.travelLabel}>Estimated drive</Text>
 
-        {prepareMessage ? <Text>{prepareMessage}</Text> : null}
+    <Text style={styles.travelTime}>
+      {travel.travel_minutes} min
+    </Text>
+
+    <Text style={styles.travelDistance}>
+      {(travel.distance_meters / 1609.344).toFixed(1)} miles
+    </Text>
+  </View>
+) : null}
+
 
         {prepareError ? (
           <Text style={styles.errorText}>{prepareError}</Text>
         ) : null}
       </View>
-    </SafeAreaView>
+        </ScrollView>
+</SafeAreaView>
   );
 }
 
@@ -264,15 +413,6 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#ffffff',
-  },
-
-  container: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 48,
-    maxWidth: 600,
-    width: '100%',
-    alignSelf: 'center',
   },
 
   logo: {
@@ -386,4 +526,37 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     marginTop: 4,
   },
+  travelCard: {
+  marginTop: 16,
+  padding: 16,
+  borderRadius: 12,
+  backgroundColor: '#f3f4f6',
+},
+
+travelLabel: {
+  fontSize: 14,
+  color: '#4b5563',
+},
+
+travelTime: {
+  fontSize: 24,
+  fontWeight: '700',
+  color: '#111827',
+  marginTop: 4,
+},
+
+travelDistance: {
+  fontSize: 14,
+  color: '#4b5563',
+  marginTop: 4,
+},
+container: {
+  flexGrow: 1,
+  paddingHorizontal: 24,
+  paddingTop: 48,
+  paddingBottom: 48,
+  maxWidth: 600,
+  width: '100%',
+  alignSelf: 'center',
+},
 });
