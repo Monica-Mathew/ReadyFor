@@ -1,3 +1,5 @@
+import RouteCard from '@/components/route-card';
+import type { TransitJourney } from '@/components/route-card';
 import { useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import { useMarkdown } from 'react-native-marked';
@@ -21,7 +23,7 @@ type PlaceDetails = PlaceSuggestion & {
   latitude: number;
   longitude: number;
 };
-type TravelEstimate = {
+type TravelEstimate = TransitJourney & {
   travel_mode?: 'Car' | 'Transit' | 'Pedestrian';
   travel_minutes: number;
   distance_meters: number;
@@ -51,6 +53,16 @@ const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 const [detailsError, setDetailsError] = useState('');
 const [travel, setTravel] = useState<TravelEstimate | null>(null);
 const [plan, setPlan] = useState('');
+const [routeOptions, setRouteOptions] = useState<{ travel: TravelEstimate; plan: string }[]>([]);
+const [routeIndex, setRouteIndex] = useState(0);
+const [routeTimezone, setRouteTimezone] = useState('America/New_York');
+function selectRoute(index: number) {
+  const option = routeOptions[index];
+  if (!option) return;
+  setRouteIndex(index);
+  setTravel(option.travel);
+  setPlan(option.plan);
+} 
 const [travelMode, setTravelMode] = useState<
   'Car' | 'Transit' | 'Pedestrian'
 >('Car');
@@ -88,6 +100,8 @@ const [travelMode, setTravelMode] = useState<
     setPrepareError('');
     setTravel(null); 
     setPlan('');
+    setRouteOptions([]);
+    setRouteIndex(0);
     if (!request.trim()) {
       setPrepareError('Please enter what you are getting ready for.');
       return;
@@ -141,6 +155,9 @@ if (
       setEditing(false);
       setPlan(data.plan ?? '');
       setTravel(data.travel ?? null);
+      setRouteOptions(data.routes ?? []);
+      setRouteIndex(0);
+      setRouteTimezone(data.timezone);
       console.log('Prepare response:', data);
       console.log('Backend time zone:', data.timezone);
       setPrepareMessage(
@@ -448,7 +465,7 @@ if (
           disabled={isPreparing}
         >
           <Text style={styles.buttonText}>
-            {isPreparing ? 'Sending...' : 'Prepare Me'}
+            {isPreparing ? 'Preparing routes and advice…' : 'Prepare Me'}
           </Text>
         </Pressable>
         {prepareError ? (
@@ -471,14 +488,19 @@ if (
             {isPreparing ? 'Preparing your plan…' : 'Add your appointment and select Prepare Me to see your plan here.'}
           </Text>
         ) : null}
+        {travel?.travel_mode === 'Transit' ? (
+          <RouteCard journey={travel} timezone={routeTimezone}
+            index={routeIndex} count={routeOptions.length}
+            onSelect={selectRoute} />
+        ) : null}
         {plan ? (
   <View style={styles.travelCard}>
     <PlanContent text={plan} />
   </View>
 ) : null}
-        {travel ? (
+        {travel && travel.travel_mode !== 'Transit' ? (
   <View style={styles.travelCard}>
-    <Text style={styles.travelLabel}>{travel.travel_mode === 'Transit' ? 'Estimated transit journey' : travel.travel_mode === 'Pedestrian' ? 'Estimated walk' : 'Estimated drive'}</Text>
+    <Text style={styles.travelLabel}>{travel.travel_mode === 'Pedestrian' ? 'Estimated walk' : 'Estimated drive'}</Text>
 
     <Text style={styles.travelTime}>
       {travel.travel_minutes} min

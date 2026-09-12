@@ -33,12 +33,35 @@ def get_travel_time(
         if appointment.tzinfo is None:
             raise ValueError("Appointment time must include a time zone.")
         params["ArrivalTime"] = (appointment - timedelta(minutes=15)).isoformat()
+    if travel_mode == "Transit":
+        params["MaxAlternatives"] = 2
     client = boto3.client("geo-routes", region_name="us-east-1")
     response = client.calculate_routes(**params)
     routes = response.get("Routes", [])
     if not routes:
         raise ValueError("No route was found for this travel mode and time. Try another time or mode.")
-    route = routes[0]
+    options = []
+    seen = set()
+    rejection_reasons = []
+    for route in routes:
+        try:
+            option = _route_result(route, travel_mode, params)
+        except ValueError as error:
+            rejection_reasons.append(str(error))
+            continue
+        signature = repr(option.get("legs", option))
+        if signature not in seen:
+            seen.add(signature)
+            options.append(option)
+    if not options:
+        reasons = list(dict.fromkeys(rejection_reasons))
+        if len(reasons) == 1:
+            raise ValueError(reasons[0])
+        raise ValueError("Could not use the returned routes: " + " ".join(reasons))
+    return {**options[0], "alternatives": options[1:]}
+
+
+def _route_result(route, travel_mode, params):
     summary = route["Summary"]
     result = {
         "travel_mode": travel_mode,
@@ -67,6 +90,24 @@ def get_travel_time(
             raise ValueError("This journey would require leaving in the past. Choose a later appointment or another mode.")
         if datetime.fromisoformat(arrival) > datetime.fromisoformat(params["ArrivalTime"]):
             raise ValueError("No transit route arrives in time with the 15-minute buffer. Try another time or mode.")
+        walking_seconds = 0
+        previous_arrival = None
+        for leg in legs:
+            start = leg.get("Departure", {}).get("Time")
+            end = leg.get("Arrival", {}).get("Time")
+            if not start or not end:
+                raise ValueError("Incomplete route schedule.")
+            start_dt, end_dt = datetime.fromisoformat(start), datetime.fromisoformat(end)
+            seconds = (end_dt - start_dt).total_seconds()
+            if seconds < 0 or (previous_arrival and start_dt < previous_arrival):
+                raise ValueError("Inconsistent route schedule.")
+            leg["duration_minutes"] = math.ceil(seconds / 60)
+            leg["wait_before_minutes"] = math.ceil((start_dt - previous_arrival).total_seconds() / 60) if previous_arrival else 0
+            previous_arrival = end_dt
+            if leg["type"] == "Pedestrian":
+                walking_seconds += seconds
+        result["travel_minutes"] = math.ceil((datetime.fromisoformat(arrival) - datetime.fromisoformat(departure)).total_seconds() / 60)
+        result["walking_minutes"] = math.ceil(walking_seconds / 60)
         result.update({
             "departure_time": departure,
             "arrival_time": arrival,

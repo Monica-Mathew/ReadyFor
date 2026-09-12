@@ -109,7 +109,19 @@ def prepare(data: PrepareRequest):
         
     }
     try:
-        result["plan"] = generate_plan(result)
+        if travel and travel.get("travel_mode") == "Transit":
+            alternatives = travel.pop("alternatives", [])
+            result["routes"] = []
+            for route in [travel, *alternatives]:
+                route_context = {**result, "travel": route, "route_card_displayed": True}
+                route_context.pop("routes", None)
+                result["routes"].append({
+                    "travel": route,
+                    "plan": generate_plan(route_context),
+                })
+            result["plan"] = result["routes"][0]["plan"]
+        else:
+            result["plan"] = generate_plan(result)
     except Exception as error:
         logging.exception("ReadyFor plan generation failed")
         raise HTTPException(
