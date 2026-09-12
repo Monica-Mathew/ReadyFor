@@ -22,6 +22,7 @@ type PlaceDetails = PlaceSuggestion & {
   longitude: number;
 };
 type TravelEstimate = {
+  travel_mode?: 'Car' | 'Transit' | 'Pedestrian';
   travel_minutes: number;
   distance_meters: number;
 };
@@ -50,6 +51,9 @@ const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 const [detailsError, setDetailsError] = useState('');
 const [travel, setTravel] = useState<TravelEstimate | null>(null);
 const [plan, setPlan] = useState('');
+const [travelMode, setTravelMode] = useState<
+  'Car' | 'Transit' | 'Pedestrian'
+>('Car');
   useEffect(() => {
     if (plan && !isWide && !editing) {
       const frame = requestAnimationFrame(() => {
@@ -112,6 +116,7 @@ if (
         },
         body: JSON.stringify({
           request: request.trim(),
+          travel_mode: travelMode,
           latitude: location?.coords.latitude ?? null,
           longitude: location?.coords.longitude ?? null,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -124,7 +129,12 @@ if (
       });
 
       if (!response.ok) {
-        throw new Error(`Request failed (${response.status}).`);
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(
+          typeof errorBody?.detail === 'string'
+            ? errorBody.detail
+            : `Request failed (${response.status}).`
+        );
       }
 
       const data = await response.json();
@@ -286,10 +296,49 @@ if (
         <TextInput
           value={request}
           onChangeText={setRequest}
-          placeholder="Dentist tomorrow at 2 PM in New Hyde Park..."
+          placeholder="Dentist tomorrow at 2 PM in Gotham..."
           multiline
           style={styles.input}
         />
+        <View style={{ marginBottom: 16 }}>
+  <Text style={styles.fieldLabel}>Travel mode</Text>
+
+  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+    {([
+      { value: 'Car', label: 'Car' },
+      { value: 'Transit', label: 'Bus / train' },
+      { value: 'Pedestrian', label: 'Walking' },
+    ] as const).map((mode) => {
+      const selected = travelMode === mode.value;
+
+      return (
+        <Pressable
+          key={mode.value}
+          onPress={() => {
+            setTravelMode(mode.value);
+            setPlan('');
+            setTravel(null);
+            setPrepareError('');
+          }}
+          accessibilityRole="radio"
+          accessibilityState={{ checked: selected }}
+          style={{
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: selected ? '#111827' : '#d1d5db',
+            backgroundColor: selected ? '#111827' : '#ffffff',
+          }}
+        >
+          <Text style={{ color: selected ? '#ffffff' : '#111827' }}>
+            {mode.label}
+          </Text>
+        </Pressable>
+      );
+    })}
+  </View>
+</View>
         <Pressable
           style={styles.detailsToggle}
           onPress={() => setShowDetails((previous) => !previous)}
@@ -392,7 +441,7 @@ if (
         {locationError ? (
           <Text style={styles.errorText}>{locationError}</Text>
         ) : null}
-
+ 
         <Pressable
           style={styles.button}
           onPress={prepareMe}
@@ -429,7 +478,7 @@ if (
 ) : null}
         {travel ? (
   <View style={styles.travelCard}>
-    <Text style={styles.travelLabel}>Estimated drive</Text>
+    <Text style={styles.travelLabel}>{travel.travel_mode === 'Transit' ? 'Estimated transit journey' : travel.travel_mode === 'Pedestrian' ? 'Estimated walk' : 'Estimated drive'}</Text>
 
     <Text style={styles.travelTime}>
       {travel.travel_minutes} min

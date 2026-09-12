@@ -1,3 +1,4 @@
+from typing import Literal
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, AwareDatetime
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,7 @@ class Destination(BaseModel):
 
 class PrepareRequest(BaseModel):
     request: str
+    travel_mode: Literal["Car", "Transit", "Pedestrian"] = "Car"
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     timezone: str
@@ -60,8 +62,11 @@ def prepare(data: PrepareRequest):
         status_code=422,
         detail="Please choose a future appointment date and time.",
     )
-    travel = None
-
+    if data.travel_mode == "Transit" and (
+        data.appointment_time is None or data.destination is None
+        or data.latitude is None or data.longitude is None
+    ):
+        raise HTTPException(status_code=422, detail="For bus/train travel, add your location, destination, and appointment time.")
     travel = None
 
     if (
@@ -75,7 +80,11 @@ def prepare(data: PrepareRequest):
                 origin_latitude=data.latitude,
                 destination_longitude=data.destination.longitude,
                 destination_latitude=data.destination.latitude,
+                travel_mode=data.travel_mode,
+                appointment_time=data.appointment_time.isoformat() if data.appointment_time else None,
             )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         except (BotoCoreError, ClientError) as error:
             raise HTTPException(
                 status_code=503,
@@ -93,6 +102,7 @@ def prepare(data: PrepareRequest):
         "current_time": now.isoformat(),
         "destination": (data.destination.model_dump() if data.destination else None),
         "travel": travel,
+        "travel_mode": data.travel_mode,
         "appointment_time": ( data.appointment_time.astimezone(user_timezone).isoformat()
     if data.appointment_time
     else None ),
