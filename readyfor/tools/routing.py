@@ -13,16 +13,19 @@ def get_travel_time(
     destination_latitude: float,
     travel_mode: str = "Car",
     appointment_time: str | None = None,
+    buffer_minutes: int = 15,
 ) -> dict:
     """Get a car, walking, or scheduled transit route. Appointment must include timezone.
 
     Transit requires an appointment time. Its returned departure already accounts
-    for a 15-minute arrival buffer; do not subtract the buffer again.
+    for the supplied arrival buffer; do not subtract the buffer again.
     """
     if travel_mode not in {"Car", "Transit", "Pedestrian"}:
         raise ValueError("Please select a valid travel mode.")
     if travel_mode == "Transit" and not appointment_time:
         raise ValueError("Please select an appointment time for bus/train travel.")
+    if buffer_minutes < 15 or buffer_minutes > 240:
+        raise ValueError("Arrival buffer must be between 15 and 240 minutes.")
     params = {
         "Origin": [origin_longitude, origin_latitude],
         "Destination": [destination_longitude, destination_latitude],
@@ -32,7 +35,7 @@ def get_travel_time(
         appointment = datetime.fromisoformat(appointment_time)
         if appointment.tzinfo is None:
             raise ValueError("Appointment time must include a time zone.")
-        params["ArrivalTime"] = (appointment - timedelta(minutes=15)).isoformat()
+        params["ArrivalTime"] = (appointment - timedelta(minutes=buffer_minutes)).isoformat()
     if travel_mode == "Transit":
         params["MaxAlternatives"] = 2
     client = boto3.client("geo-routes", region_name="us-east-1")
@@ -45,7 +48,7 @@ def get_travel_time(
     rejection_reasons = []
     for route in routes:
         try:
-            option = _route_result(route, travel_mode, params)
+            option = _route_result(route, travel_mode, params, buffer_minutes)
         except ValueError as error:
             rejection_reasons.append(str(error))
             continue
@@ -61,7 +64,7 @@ def get_travel_time(
     return {**options[0], "alternatives": options[1:]}
 
 
-def _route_result(route, travel_mode, params):
+def _route_result(route, travel_mode, params, buffer_minutes):
     summary = route["Summary"]
     result = {
         "travel_mode": travel_mode,
@@ -89,7 +92,7 @@ def _route_result(route, travel_mode, params):
         if datetime.fromisoformat(departure) <= datetime.now().astimezone():
             raise ValueError("This journey would require leaving in the past. Choose a later appointment or another mode.")
         if datetime.fromisoformat(arrival) > datetime.fromisoformat(params["ArrivalTime"]):
-            raise ValueError("No transit route arrives in time with the 15-minute buffer. Try another time or mode.")
+            raise ValueError("No transit route arrives in time with the selected arrival buffer. Try another time or mode.")
         walking_seconds = 0
         previous_arrival = None
         for leg in legs:
@@ -111,7 +114,7 @@ def _route_result(route, travel_mode, params):
         result.update({
             "departure_time": departure,
             "arrival_time": arrival,
-            "arrival_buffer_minutes": 15,
+            "arrival_buffer_minutes": buffer_minutes,
             "legs": legs,
             "notices": route.get("Notices", []),
         })

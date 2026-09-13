@@ -1,11 +1,20 @@
+import AppointmentHistory from '@/components/appointment-history';
+import EmailPlan from '@/components/email-plan';
+import { loadAppointments, writeAppointments } from '@/lib/appointment-store';
+import type { SavedAppointment } from '@/lib/appointment-types';
+import LeaveSummary from '@/components/leave-summary';
+import LeaveReminder from '@/components/leave-reminder';
+import PlanContent from '@/components/plan-content';
+import { readPrepareStream } from '@/lib/read-prepare-stream';
 import RouteCard from '@/components/route-card';
 import type { TransitJourney } from '@/components/route-card';
 import { useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import { useMarkdown } from 'react-native-marked';
 import AppointmentPicker from '@/components/appointment-picker';
 import {
   Pressable,
+  Platform,
+  ActivityIndicator,
   StyleSheet,
   Text,
   TextInput,
@@ -28,12 +37,6 @@ type TravelEstimate = TransitJourney & {
   travel_minutes: number;
   distance_meters: number;
 };
-function PlanContent({ text }: { text: string }) {
-  const elements = useMarkdown(text, { colorScheme: 'light' });
-
-  return <View>{elements}</View>;
-}
-
 export default function HomeScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 960;
@@ -53,6 +56,34 @@ const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 const [detailsError, setDetailsError] = useState('');
 const [travel, setTravel] = useState<TravelEstimate | null>(null);
 const [plan, setPlan] = useState('');
+const [history, setHistory] = useState<SavedAppointment[]>([]);
+const historyRef = useRef<SavedAppointment[]>([]);
+const storageQueue = useRef(Promise.resolve());
+const [historyError, setHistoryError] = useState('');
+const historyReady = useRef(false);
+const [savedView, setSavedView] = useState(false);
+const [sourceLinks, setSourceLinks] = useState<string[]>([]);
+useEffect(() => { loadAppointments().then(items => { historyRef.current = items; setHistory(items); historyReady.current = true; }).catch(() => setHistoryError('Could not load saved appointments.')); }, []);
+function persistHistory(items: SavedAppointment[]) {
+  historyRef.current = items; setHistory(items);
+  storageQueue.current = storageQueue.current.catch(() => {}).then(() => writeAppointments(items)).catch(() => setHistoryError('Could not save appointments on this device.'));
+}
+function viewHistory(item: SavedAppointment) {
+  const data = item.data;
+  setSavedView(true); setEditing(false); setPlan(data.plan);
+  setTravel(data.travel ?? null); setRouteOptions(data.routes ?? []); setRouteIndex(0);
+  setRouteTimezone(data.timezone); setReminderContext({ activity: data.request, destination: data.destination?.address ?? '' });
+  setSourceLinks((data.official_research?.sources ?? []).map((source: { url: string }) => source.url));
+}
+function reuseHistory(item: SavedAppointment) {
+  const data = item.data;
+  setRequest(data.request); setTravelMode(data.travel_mode ?? 'Car');
+  setDestination(data.destination?.title ?? ''); setSelectedPlace(data.destination ?? null);
+  setDestinationDetails(data.destination ?? null); setAppointmentTime(null);
+  setPlan(''); setTravel(null); setRouteOptions([]); setSavedView(false); setEditing(true); setShowDetails(true);
+}
+
+const [reminderContext, setReminderContext] = useState({ activity: '', destination: '' });
 const [routeOptions, setRouteOptions] = useState<{ travel: TravelEstimate; plan: string }[]>([]);
 const [routeIndex, setRouteIndex] = useState(0);
 const [routeTimezone, setRouteTimezone] = useState('America/New_York');
@@ -89,6 +120,7 @@ const [travelMode, setTravelMode] = useState<
     setLocation(currentLocation);
   }
   const [isPreparing, setIsPreparing] = useState(false);
+  const [loadingStage, setLoadingStage] = useState('');
   const [prepareMessage, setPrepareMessage] = useState('');
   const [prepareError, setPrepareError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
@@ -96,6 +128,8 @@ const [travelMode, setTravelMode] = useState<
   const [appointmentTime, setAppointmentTime] = useState<Date | null>(null);
 
   async function prepareMe() {
+    setSavedView(false);
+    setSourceLinks([]);
     setPrepareMessage('');
     setPrepareError('');
     setTravel(null); 
@@ -120,10 +154,11 @@ if (
   );
   return;
 }
+    setLoadingStage('Connecting to ReadyFor…');
     setIsPreparing(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/prepare', {
+      const response = await fetch(`http://127.0.0.1:8000/prepare${Platform.OS === 'web' ? '/stream' : ''}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -151,13 +186,19 @@ if (
         );
       }
 
-      const data = await response.json();
+      const data = Platform.OS === 'web'
+        ? await readPrepareStream(response, setLoadingStage)
+        : await response.json();
       setEditing(false);
       setPlan(data.plan ?? '');
       setTravel(data.travel ?? null);
       setRouteOptions(data.routes ?? []);
       setRouteIndex(0);
       setRouteTimezone(data.timezone);
+      setSourceLinks((data.official_research?.sources ?? []).map((source: { url: string }) => source.url));
+      const { latitude: _lat, longitude: _lon, ...snapshot } = data;
+      if (historyReady.current) persistHistory([{ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, savedAt: new Date().toISOString(), data: snapshot }, ...historyRef.current]);
+      setReminderContext({ activity: data.request, destination: data.destination?.address ?? '' });
       console.log('Prepare response:', data);
       console.log('Backend time zone:', data.timezone);
       setPrepareMessage(
@@ -170,6 +211,7 @@ if (
         error instanceof Error ? error.message : 'Something went wrong.'
       );
     } finally {
+      setLoadingStage('');
       setIsPreparing(false);
     }
   }
@@ -297,6 +339,9 @@ if (
     keyboardShouldPersistTaps="handled"
   >
       <Text style={styles.logo}>ReadyFor</Text>
+      <AppointmentHistory items={history} onView={viewHistory} onReuse={reuseHistory}
+        onDelete={id => persistHistory(historyRef.current.filter(item => item.id !== id))} />
+      {historyError ? <Text style={styles.errorText}>{historyError}</Text> : null}
       <View style={[styles.layout, isWide && styles.wideLayout]}>
       {isWide || !plan || editing ? (
       <View style={[styles.formPanel, isWide && styles.wideForm]}>
@@ -465,9 +510,17 @@ if (
           disabled={isPreparing}
         >
           <Text style={styles.buttonText}>
-            {isPreparing ? 'Preparing routes and advice…' : 'Prepare Me'}
+            {isPreparing ? 'Preparing…' : 'Prepare Me'}
           </Text>
         </Pressable>
+        {isPreparing ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 12 }}>
+            <ActivityIndicator color="#111827" />
+            <Text accessibilityLiveRegion="polite" style={{ flex: 1, color: '#4b5563' }}>
+              {Platform.OS === 'web' ? loadingStage : 'Finding routes and putting your plan together…'}
+            </Text>
+          </View>
+        ) : null}
         {prepareError ? (
           <Text style={styles.errorText}>{prepareError}</Text>
         ) : null}
@@ -483,9 +536,10 @@ if (
             </Pressable>
           ) : null}
         </View>
+        {savedView ? <Text style={{ color: '#92400e', marginVertical: 8 }}>Saved plan — routes, weather and requirements may be outdated. Use details again to prepare a fresh plan.</Text> : null}
         {!plan ? (
           <Text style={styles.emptyPlan}>
-            {isPreparing ? 'Preparing your plan…' : 'Add your appointment and select Prepare Me to see your plan here.'}
+            {isPreparing ? (loadingStage || 'Preparing your plan…') : 'Add your appointment and select Prepare Me to see your plan here.'}
           </Text>
         ) : null}
         {travel?.travel_mode === 'Transit' ? (
@@ -493,12 +547,19 @@ if (
             index={routeIndex} count={routeOptions.length}
             onSelect={selectRoute} />
         ) : null}
+        {travel?.departure_time && travel.travel_mode !== 'Transit' ? (
+          <LeaveSummary travel={travel} timezone={routeTimezone} />
+        ) : null}
+        {travel?.departure_time && plan && !savedView ? (
+          <LeaveReminder key={travel.departure_time + reminderContext.activity + reminderContext.destination}
+            departure={travel.departure_time} activity={reminderContext.activity}
+            destination={reminderContext.destination} timezone={routeTimezone} />
+        ) : null}
+        {plan ? <EmailPlan activity={reminderContext.activity} plan={plan} travel={travel} timezone={routeTimezone} sources={sourceLinks} /> : null}
         {plan ? (
-  <View style={styles.travelCard}>
-    <PlanContent text={plan} />
-  </View>
+  <PlanContent text={plan} />
 ) : null}
-        {travel && travel.travel_mode !== 'Transit' ? (
+        {travel && !travel.departure_time && travel.travel_mode !== 'Transit' ? (
   <View style={styles.travelCard}>
     <Text style={styles.travelLabel}>{travel.travel_mode === 'Pedestrian' ? 'Estimated walk' : 'Estimated drive'}</Text>
 

@@ -9,6 +9,7 @@ def get_weather(
     longitude: float,
     date: str,
     hour: int,
+    timezone_name: str = "auto",
 ) -> dict:
     url = "https://api.open-meteo.com/v1/forecast"
 
@@ -22,7 +23,7 @@ def get_weather(
             "weather_code"
         ),
         "temperature_unit": "fahrenheit",
-        "timezone": "auto",
+        "timezone": timezone_name,
         "start_date": date,
         "end_date": date,
     }

@@ -1,8 +1,14 @@
+from readyfor.official_research import research_official_steps
+from readyfor.arrival_buffer import choose_arrival_buffer
+from fastapi.responses import StreamingResponse, Response
+from queue import Queue, Empty
+from threading import Thread, Event
+import json
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, AwareDatetime
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from botocore.exceptions import BotoCoreError, ClientError
 from readyfor.tools.routing import get_travel_time
@@ -45,6 +51,11 @@ def health():
 
 @app.post("/prepare")
 def prepare(data: PrepareRequest):
+    return _prepare(data)
+
+
+def _prepare(data: PrepareRequest, progress=lambda message: None):
+    progress("Checking your details…")
     try:
         user_timezone = ZoneInfo(data.timezone)
     except (ZoneInfoNotFoundError, ValueError):
@@ -67,6 +78,14 @@ def prepare(data: PrepareRequest):
         or data.latitude is None or data.longitude is None
     ):
         raise HTTPException(status_code=422, detail="For bus/train travel, add your location, destination, and appointment time.")
+    progress("Choosing an arrival buffer…")
+    try:
+        buffer = choose_arrival_buffer(data.request, data.destination.model_dump() if data.destination else None)
+    except Exception as error:
+        logging.exception("Arrival buffer selection failed")
+        raise HTTPException(status_code=503, detail="Could not choose the arrival buffer. Please try again.") from error
+    if buffer.get("needs_clarification"):
+        raise HTTPException(status_code=422, detail=buffer["needs_clarification"])
     travel = None
 
     if (
@@ -75,12 +94,14 @@ def prepare(data: PrepareRequest):
     and data.destination is not None
 ):
         try:
+            progress("Finding routes…")
             travel = get_travel_time(
                 origin_longitude=data.longitude,
                 origin_latitude=data.latitude,
                 destination_longitude=data.destination.longitude,
                 destination_latitude=data.destination.latitude,
                 travel_mode=data.travel_mode,
+                buffer_minutes=buffer["minutes"],
                 appointment_time=data.appointment_time.isoformat() if data.appointment_time else None,
             )
         except ValueError as error:
@@ -93,6 +114,18 @@ def prepare(data: PrepareRequest):
 
 
 
+    if travel and data.appointment_time and not travel.get("departure_time"):
+        travel["departure_time"] = (data.appointment_time - timedelta(minutes=travel["travel_minutes"] + buffer["minutes"])).isoformat()
+    if travel and data.appointment_time:
+        for option in [travel, *travel.get("alternatives", [])]:
+            option["arrival_buffer_minutes"] = buffer["minutes"]
+            option["buffer_reason"] = buffer["reason"]
+            option["buffer_source"] = buffer["source"]
+            option["target_arrival_time"] = (data.appointment_time - timedelta(minutes=buffer["minutes"])).astimezone(user_timezone).isoformat()
+            if option.get("departure_time"):
+                option["departure_time"] = datetime.fromisoformat(option["departure_time"]).astimezone(user_timezone).isoformat()
+        if datetime.fromisoformat(travel["departure_time"]) <= now:
+            raise HTTPException(status_code=422, detail="You would need to leave before now to arrive with this buffer. Choose a later time or another route.")
     result = {
         "message": "Request received",
         "request": data.request,
@@ -102,17 +135,44 @@ def prepare(data: PrepareRequest):
         "current_time": now.isoformat(),
         "destination": (data.destination.model_dump() if data.destination else None),
         "travel": travel,
+        "arrival_buffer": buffer,
+        "route_card_displayed": bool(travel and travel.get("departure_time")),
         "travel_mode": data.travel_mode,
         "appointment_time": ( data.appointment_time.astimezone(user_timezone).isoformat()
     if data.appointment_time
     else None ),
         
     }
+    # Reuse the existing activity classification: ordinary visits do not need web research.
+    research = None
+    if buffer.get("category") == "government":
+        progress("Checking official preparation instructions…")
+        research = research_official_steps(data.request, result["destination"])
+    result["official_research"] = research
+    research_status = research.get("status", "unavailable") if research is not None else "not_needed"
+    sources = (research or {}).get("sources") or []
+    logging.warning("ReadyFor research completed: status=%s sources=%d code=%s",
+                    research_status, len(sources), (research or {}).get("error_code", "none"))
+    if research_status == "needs_clarification":
+        result["plan"] = ("### DETAILS TO CONFIRM\n\nBefore I show a personal checklist:\n\n"
+                          + "\n".join("- " + question for question in research["questions"])
+                          + "\n\nAdd these answers to your request and select Prepare Me again.")
+        result["message"] = "More details needed"
+        return result
+    if research_status not in {"researched", "partial", "not_needed"} or (research_status in {"researched", "partial"} and not sources):
+        code = (research or {}).get("error_code") or "no_usable_sources"
+        message = "Could not verify preparation requirements. Please retry."
+        if code == "missing_tavily_key":
+            message = "Official-source search is not configured. Set TAVILY_API_KEY in the backend environment and restart the server."
+        if code == "evidence_review_failed":
+            message = "The preparation instructions did not pass the source review. A retry may not resolve the issue; the backend log contains the review reason."
+        raise HTTPException(status_code=503, detail=f"{message} Research error: {code}. No plan was generated.")
     try:
         if travel and travel.get("travel_mode") == "Transit":
             alternatives = travel.pop("alternatives", [])
             result["routes"] = []
-            for route in [travel, *alternatives]:
+            for number, route in enumerate([travel, *alternatives], start=1):
+                progress(f"Putting your plan together — route {number} of {1 + len(alternatives)}…")
                 route_context = {**result, "travel": route, "route_card_displayed": True}
                 route_context.pop("routes", None)
                 result["routes"].append({
@@ -121,6 +181,7 @@ def prepare(data: PrepareRequest):
                 })
             result["plan"] = result["routes"][0]["plan"]
         else:
+            progress("Putting your plan together…")
             result["plan"] = generate_plan(result)
     except Exception as error:
         logging.exception("ReadyFor plan generation failed")
@@ -129,6 +190,9 @@ def prepare(data: PrepareRequest):
             detail="Could not generate your plan. Please try again.",
         ) from error
 
+    if research:
+        # Keep source links/date in saved plans, without duplicating full scraped documents.
+        result["official_research"] = {**research, "sources": [{"url": source["url"]} for source in research["sources"]]}
     return result
     
 
@@ -194,3 +258,51 @@ def get_place_details(
         "latitude": latitude,
         "longitude": longitude,
     }
+
+@app.post("/prepare/stream")
+def prepare_stream(data: PrepareRequest):
+    """Stream actual preparation stages, then the same result as /prepare."""
+    def events():
+        queue = Queue()
+        stopped = Event()
+        def progress(message):
+            if stopped.is_set():
+                raise RuntimeError("Client disconnected")
+            queue.put({"type": "progress", "message": message})
+        def work():
+            try:
+                result = _prepare(data, progress)
+                queue.put({"type": "result", "data": result})
+            except HTTPException as error:
+                queue.put({"type": "error", "message": error.detail})
+            except Exception:
+                logging.exception("Streaming preparation failed")
+                queue.put({"type": "error", "message": "Could not prepare your plan. Please try again."})
+        Thread(target=work, daemon=True).start()
+        try:
+            while True:
+                try:
+                    event = queue.get(timeout=10)
+                except Empty:
+                    yield "\n"
+                    continue
+                yield json.dumps(event) + "\n"
+                if event["type"] in {"result", "error"}:
+                    break
+        finally:
+            stopped.set()
+    return StreamingResponse(events(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/reminder.ics")
+def calendar_reminder(
+    departure: AwareDatetime,
+    activity: str = Query(max_length=500),
+    destination: str = Query(default="", max_length=1000),
+):
+    from readyfor.calendar_reminder import make_calendar
+    if departure <= datetime.now().astimezone():
+        raise HTTPException(status_code=422, detail="That leave time has passed. Prepare a new plan first.")
+    return Response(make_calendar(departure, activity, destination), media_type="text/calendar",
+                    headers={"Content-Disposition": 'attachment; filename="readyfor-reminder.ics"', "Cache-Control": "no-store"})
