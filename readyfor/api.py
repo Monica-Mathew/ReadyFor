@@ -147,26 +147,18 @@ def _prepare(data: PrepareRequest, progress=lambda message: None):
     research = None
     if buffer.get("category") == "government":
         progress("Checking official preparation instructions…")
-        research = research_official_steps(data.request, result["destination"])
+        try:
+            research = research_official_steps(data.request, result["destination"])
+        except Exception:
+            logging.exception("ReadyFor preparation research unavailable")
+            research = {"status": "unavailable", "sources": [], "summary": "", "error_code": "research_unavailable"}
     result["official_research"] = research
     research_status = research.get("status", "unavailable") if research is not None else "not_needed"
     sources = (research or {}).get("sources") or []
     logging.warning("ReadyFor research completed: status=%s sources=%d code=%s",
                     research_status, len(sources), (research or {}).get("error_code", "none"))
-    if research_status == "needs_clarification":
-        result["plan"] = ("### DETAILS TO CONFIRM\n\nBefore I show a personal checklist:\n\n"
-                          + "\n".join("- " + question for question in research["questions"])
-                          + "\n\nAdd these answers to your request and select Prepare Me again.")
-        result["message"] = "More details needed"
-        return result
-    if research_status not in {"researched", "partial", "not_needed"} or (research_status in {"researched", "partial"} and not sources):
-        code = (research or {}).get("error_code") or "no_usable_sources"
-        message = "Could not verify preparation requirements. Please retry."
-        if code == "missing_tavily_key":
-            message = "Official-source search is not configured. Set TAVILY_API_KEY in the backend environment and restart the server."
-        if code == "evidence_review_failed":
-            message = "The preparation instructions did not pass the source review. A retry may not resolve the issue; the backend log contains the review reason."
-        raise HTTPException(status_code=503, detail=f"{message} Research error: {code}. No plan was generated.")
+    if research is not None and research_status not in {"researched", "not_needed"}:
+        result["message"] = "Your plan is ready; some preparation details could not be verified."
     try:
         if travel and travel.get("travel_mode") == "Transit":
             alternatives = travel.pop("alternatives", [])
@@ -192,7 +184,7 @@ def _prepare(data: PrepareRequest, progress=lambda message: None):
 
     if research:
         # Keep source links/date in saved plans, without duplicating full scraped documents.
-        result["official_research"] = {**research, "sources": [{"url": source["url"]} for source in research["sources"]]}
+        result["official_research"] = {**research, "sources": [{"url": source["url"]} for source in research.get("sources", [])]}
     return result
     
 

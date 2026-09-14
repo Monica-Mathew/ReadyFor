@@ -127,7 +127,7 @@ Never invent missing route details.
 
 def generate_plan(context: dict) -> str:
     research = context.get("official_research") or {}
-    if research.get("status") in {"researched", "partial"} and research.get("sources") and research.get("summary"):
+    if context.get("official_research") is not None and research.get("status") != "not_needed":
         from readyfor.grounded_plan import compose_researched_plan
         return compose_researched_plan(context)
     research_instructions = """
