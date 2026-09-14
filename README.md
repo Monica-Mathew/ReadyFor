@@ -13,8 +13,6 @@ Expo · React Native · TypeScript · Python · FastAPI · Strands Agents SDK ·
 
 Strands and Nova provide everyday advice. A separate Nova/Tavily flow researches official instructions. Python handles departure calculations.
 
-![Architecture](docs/architecture.svg)
-
 ## Run locally
 Requires Python 3.11–3.13, Poetry, Node.js 22.13+, and AWS credentials with Nova and Amazon Location Service access in `us-east-1`.
 
