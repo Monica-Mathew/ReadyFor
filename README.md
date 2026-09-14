@@ -1,5 +1,5 @@
 # ReadyFor
-**Know when to leave—and feel ready when you do.**
+**Know when to leave and feel ready when you do.**
 
 ReadyFor is a context-aware pre-departure assistant for work, appointments, errands, and events. It combines your plans, destination, travel mode, weather, and relevant preparation information in one interface.
 
